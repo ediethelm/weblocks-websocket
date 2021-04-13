@@ -14,7 +14,9 @@
    #:websocket-widget
    #:*background*
    #:in-thread
-   #:send-command))
+   #:send-command
+   #:on-close
+   #:make-ws-action))
 (in-package weblocks.websocket)
 
 
@@ -26,6 +28,9 @@
   "This variable will be set to true when first WebSocket widget will be initialized.")
 
 
+(weblocks/widget:defwidget websocket-widget ()
+  ())
+
 (defun on-message (ws message)
   (log:debug "Received websocket message" ws message)
 
@@ -34,8 +39,10 @@
   ;;                           message))
   )
 
-
-(defun on-close (ws &key code reason)
+(defgeneric on-close (ws &key code reason))
+(defmethod on-close ((ws t) &key code reason)
+  (declare (ignore ws code reason)))
+(defmethod on-close :before ((ws websocket-widget) &key code reason)
   (log:debug "Websocket was closed" ws reason code))
 
 
@@ -86,11 +93,6 @@ Automatically adds a prefix depending on current webapp and widget."
   (let ((route (make-instance 'websocket-route
                               :template (routes:parse-template uri))))
     (weblocks/routes:add-route route)))
-
-
-(weblocks/widget:defwidget websocket-widget ()
-  ())
-
 
 (defmethod initialize-instance ((widget websocket-widget) &rest initargs)
   (declare (ignorable initargs))
@@ -283,6 +285,44 @@ between usual request processing and background activity."
                              ,@body))
                          :name ,thread-name)))))
 
+
+(defmacro make-ws-action (lambda-args &body body)
+  "Define a lambda to be used to update a widget over websocket."
+
+  (flet ((let-bindings (&rest args)
+           "Returns a list or given arguments while removing nils.
+            Suitable to form let's bind in macroses."
+           (remove-if #'null args)))
+
+    (let* ((woo-package (find-package :woo))
+           (ev-loop-symbol (when woo-package
+                             (alexandria:ensure-symbol '*evloop*
+                                                       :woo))))
+      `(let* ,(let-bindings
+               '(session weblocks/session::*session*)
+               '(request weblocks/request::*request*)
+               (when woo-package
+                 (list 'evloop ev-loop-symbol)))
+         ;; Here we need to drop this header if it exists,
+         ;; to make ajax-request-p return false for subsequent calls
+         ;; in the thread.
+         (when (weblocks/request:get-header "X-Requested-With"
+                                            :request request)
+           (setf request
+                 (weblocks/request:remove-header "X-Requested-With"
+                                                 :request request)))
+
+	 ;; The lambda
+	 (lambda (,@lambda-args)
+           (let ,(let-bindings
+		  '(weblocks/session::*session* session)
+		  '(weblocks/request::*request* request)
+		  ;; Hack
+		  (when woo-package
+                    (list ev-loop-symbol 'evloop))
+		  '(*background* t))
+             ,@body))
+	 ))))
 
 (defmacro in-thread-loop ((thread-name) &body body)
   "Starts give piece of code in named thread, ensiring that weblocks/session::*session* and
