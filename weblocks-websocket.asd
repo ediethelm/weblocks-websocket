@@ -3,7 +3,7 @@
   :author ""
   :license ""
   :depends-on (
-               (:version :weblocks "0.28.0")
+               :weblocks
                :weblocks-parenscript
                :websocket-driver)
   :components ((:module "src"
